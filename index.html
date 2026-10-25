@@ -23,25 +23,78 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
 
-        /* The container where v86 injects the canvas */
+        /* Force v86 to fill the entire screen while keeping aspect ratio */
         #screen_container {
-            width: 100%;
-            height: 100%;
+            position: absolute;
+            inset: 0;
             display: flex;
             align-items: center;
             justify-content: center;
+            background: #000;
         }
 
-        #screen_container canvas {
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
+        /* Target both the canvas (graphics) and div (text mode) injected by v86 */
+        #screen_container canvas, 
+        #screen_container > div {
+            width: 100vw !important;
+            height: 100vh !important;
+            object-fit: contain !important;
+            /* Keeps the retro pixels crisp when scaled up */
+            image-rendering: pixelated; 
+            image-rendering: crisp-edges;
             outline: none;
         }
 
         /* Hide the host cursor when the mouse is captured */
         #screen_container.locked canvas {
             cursor: none !important;
+        }
+
+        /* Top-Left System Monitor */
+        #sys-hud {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(15, 15, 15, 0.85);
+            color: #00ff00;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 10px 15px;
+            border: 1px solid #333;
+            border-radius: 4px;
+            z-index: 100;
+            backdrop-filter: blur(4px);
+            pointer-events: none;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            min-width: 140px;
+        }
+        
+        #sys-hud .title {
+            font-size: 10px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+
+        #sys-hud .value {
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        #mem-bar-container {
+            width: 100%;
+            height: 6px;
+            background: #222;
+            margin-top: 6px;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        #mem-bar {
+            height: 100%;
+            width: 0%;
+            background: #00ff00;
+            transition: width 0.3s ease, background 0.3s ease;
         }
 
         /* Floating UI Overlay */
@@ -52,7 +105,7 @@
             display: flex;
             gap: 10px;
             z-index: 100;
-            opacity: 0.3;
+            opacity: 0.4;
             transition: opacity 0.3s;
         }
 
@@ -69,6 +122,7 @@
             cursor: pointer;
             font-weight: bold;
             backdrop-filter: blur(4px);
+            transition: background 0.2s;
         }
 
         #overlay button:hover {
@@ -93,7 +147,7 @@
             width: 50px;
             height: 50px;
             border: 5px solid #333;
-            border-top-color: #fff;
+            border-top-color: #00ff00;
             border-radius: 50%;
             animation: spin 1s linear infinite;
             margin-bottom: 20px;
@@ -101,7 +155,7 @@
 
         @keyframes spin { 100% { transform: rotate(360deg); } }
         
-        #status-text { font-size: 14px; color: #aaa; }
+        #status-text { font-size: 14px; color: #aaa; font-family: monospace; }
     </style>
 </head>
 <body>
@@ -111,8 +165,17 @@
         <div id="status-text">Fetching KolibriOS image...</div>
     </div>
 
+    <!-- Top left system monitor -->
+    <div id="sys-hud">
+        <div class="title">System Memory</div>
+        <div class="value" id="mem-text">-- MB</div>
+        <div id="mem-bar-container"><div id="mem-bar"></div></div>
+    </div>
+
+    <!-- The VM Screen -->
     <div id="screen_container" tabindex="0"></div>
 
+    <!-- Bottom right controls -->
     <div id="overlay">
         <button id="btn-fs">⛶ Fullscreen</button>
         <button id="btn-restart">↻ Restart</button>
@@ -124,6 +187,9 @@
         const statusText = document.getElementById('status-text');
         const btnFs = document.getElementById('btn-fs');
         const btnRestart = document.getElementById('btn-restart');
+        
+        const memText = document.getElementById('mem-text');
+        const memBar = document.getElementById('mem-bar');
 
         let emulator = null;
 
@@ -139,15 +205,12 @@
         });
 
         // 2. Handle Mouse Capture (Fixes the "two mouses" issue)
-        // When clicking the VM, lock the pointer. Pressing Esc releases it.
         screenContainer.addEventListener('click', (e) => {
-            // Only lock if we click the canvas and aren't already locked
             if (e.target.tagName === 'CANVAS' && !document.pointerLockElement) {
                 e.target.requestPointerLock();
             }
         });
 
-        // UI feedback for mouse lock state
         document.addEventListener('pointerlockchange', () => {
             if (document.pointerLockElement) {
                 screenContainer.classList.add('locked');
@@ -156,7 +219,29 @@
             }
         });
 
-        // 3. Initialize the Emulator
+        // 3. Live Memory Monitor
+        setInterval(() => {
+            if (performance && performance.memory) {
+                const usedMB = performance.memory.usedJSHeapSize / 1048576;
+                const limitMB = performance.memory.jsHeapSizeLimit / 1048576;
+                const pct = Math.min(100, (usedMB / limitMB) * 100);
+                
+                memText.textContent = `${usedMB.toFixed(1)} MB`;
+                memBar.style.width = `${pct}%`;
+                
+                // Change color based on usage severity
+                if (pct > 80) memBar.style.background = '#ff3333';
+                else if (pct > 50) memBar.style.background = '#ffcc00';
+                else memBar.style.background = '#00ff00';
+            } else {
+                // Fallback for browsers that block performance.memory
+                memText.textContent = '64 MB Allocated';
+                memBar.style.width = '100%';
+                memBar.style.background = '#555';
+            }
+        }, 1000);
+
+        // 4. Initialize the Emulator
         async function startVM() {
             if (emulator) {
                 emulator.stop();
@@ -169,14 +254,12 @@
             statusText.textContent = 'Fetching KolibriOS image...';
 
             try {
-                // Fetch the OS image from the /v86/ folder
                 const response = await fetch('v86/kolibrios-0.7.7.0-9252-g17a0b9d7-en_US.img');
                 if (!response.ok) throw new Error('Failed to load image. Check if it exists in /v86/');
                 const imageBuffer = await response.arrayBuffer();
 
                 statusText.textContent = 'Booting KolibriOS...';
 
-                // Boot v86
                 emulator = new V86({
                     wasm_path: 'v86/v86.wasm',
                     memory_size: 64 * 1024 * 1024, // 64 MB RAM
@@ -184,24 +267,17 @@
                     screen_container: screenContainer,
                     bios: { url: 'v86/seabios.bin' },
                     vga_bios: { url: 'v86/vgabios.bin' },
-                    
-                    // Mount the KolibriOS image as a floppy drive
                     fda: { buffer: imageBuffer },
-                    
-                    // Enable networking for internet access
                     nic_type: 'ne2k',
                     network_relay_url: 'wss://relay.widgetry.org/', 
-                    
                     disable_speaker: true,
                     autostart: true,
                 });
 
-                // Hide the loader once the emulator is ready
                 emulator.add_listener('emulator-ready', () => {
                     loader.style.opacity = '0';
                     setTimeout(() => { loader.style.display = 'none'; }, 500);
                     
-                    // Auto-focus the canvas so keyboard works immediately
                     const canvas = screenContainer.querySelector('canvas');
                     if (canvas) canvas.focus();
                 });
